@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <tcadb.h>
+#include <ttutil.h>
 #include <assert.h>
 #include <pthread.h>
 #include <arpa/inet.h>
@@ -47,6 +48,9 @@
 #define IPLIST_ALIGN_UP(s)      \
     (((s) + (sizeof(uintptr_t) * 8 - 1)) & ~(8 * sizeof(uintptr_t) - 1))
 #define IPLIST_ALIGN_DOWN(s)    ((s) & (8 * sizeof(uintptr_t)))
+
+
+extern TTSERV  *g_serv;
 
 
 typedef struct {
@@ -374,6 +378,8 @@ static void iplist_del(void *opq) {
     int        i;
     iplist_t  *ipl = (iplist_t *) opq;
 
+    ttservlog(g_serv, TTLOGINFO, "destroy ttskeliplist");
+
     for (i = 0; i < IPLIST_INDEX_COUNT; i++) {
         if (ipl->count[i] > 0) {
             tcfree(ipl->index[i]);
@@ -387,6 +393,7 @@ static void iplist_del(void *opq) {
 
 
 static bool iplist_open(void *opq, const char *name) {
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist open \"%s\"", name);
     return true;
 }
 
@@ -682,6 +689,8 @@ static bool iplist_vanish(void *opq) {
 bool initialize(ADBSKEL *skel) {
     int        i;
     iplist_t  *ipl;
+
+    ttservlog(g_serv, TTLOGINFO, "initialize ttskeliplist");
 
     ipl = tccalloc(1, sizeof(iplist_t));
     skel->opq = ipl;
