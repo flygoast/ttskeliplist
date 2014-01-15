@@ -465,13 +465,8 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 
     assert(opq && kbuf && ksiz >= 0 && vbuf && vsiz >= 0);
 
-    ttservlog(g_serv, TTLOGINFO, "ttskeliplist put \"%.*s\"",
-              ksiz, (char *) kbuf);
-
-    /* limit value only can be "1" */
-    if (vsiz != 1 || *(char *) vbuf != '1') {
-        return false;
-    }
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist put \"%.*s\"=>\"%.*s\"",
+              ksiz, (char *) kbuf, vsiz, (char *) vbuf);
 
     if (!iplist_parse_addr((char *) kbuf, ksiz, &start, &end)) {
         return false;
