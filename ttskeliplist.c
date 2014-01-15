@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 #include <tcadb.h>
 #include <ttutil.h>
 #include <assert.h>
@@ -47,7 +48,7 @@
 #define IPLIST_INDEX_BIT(a)     ((uintptr_t) 1 << ((a) % IPLIST_COUNT_PERPTR))
 #define IPLIST_ALIGN_UP(s)      \
     (((s) + (sizeof(uintptr_t) * 8 - 1)) & ~(8 * sizeof(uintptr_t) - 1))
-#define IPLIST_ALIGN_DOWN(s)    ((s) & (8 * sizeof(uintptr_t)))
+#define IPLIST_ALIGN_DOWN(s)    ((s) & ~(8 * sizeof(uintptr_t) - 1))
 
 
 extern TTSERV  *g_serv;
@@ -60,11 +61,12 @@ typedef struct {
 } iplist_t;
 
 
-static bool iplist_parse_addr(char *p, int sz, in_addr_t *s, in_addr_t *e) {
+static bool iplist_parse_addr(char *ip, int sz, in_addr_t *s, in_addr_t *e) {
     in_addr_t   addr;
     int         i, octet, n, m;
     uint32_t    mask;
     char        c;
+    char       *p = ip;
     in_addr_t  *pa;
 
     addr = 0;
@@ -92,7 +94,6 @@ static bool iplist_parse_addr(char *p, int sz, in_addr_t *s, in_addr_t *e) {
         if (c == '-') {
             if (n == 3 && octet < 256) {
                 *pa = (addr << 8) + octet;
-
                 addr = 0;
                 octet = 0;
                 n = 0;
@@ -100,7 +101,7 @@ static bool iplist_parse_addr(char *p, int sz, in_addr_t *s, in_addr_t *e) {
                 continue;
             }
 
-            return false;
+            goto failed;
         }
 
         if (c == '/') {
@@ -114,27 +115,30 @@ static bool iplist_parse_addr(char *p, int sz, in_addr_t *s, in_addr_t *e) {
                     continue;
                 }
 
-                return false;
+                goto failed;
             }
 
             if (m > 31) {
-                return false;
+                goto failed;
             }
 
             mask = 0xffffffff & ~((1 << (32 - m)) - 1);
 
             if (n == 3 && octet < 256) {
                 addr = ((addr << 8) + octet) & mask;
-                *s = addr & mask;
+                *s = addr;
                 mask = (1 << (32 - m)) - 1;
                 *e = addr | mask;
+
+                ttservlog(g_serv, TTLOGDEBUG, "ttskeliplist range %x-%x",
+                          *s, *e);
                 return true;
             }
 
-            return false;
+            goto failed;
         }
 
-        return false;
+        goto failed;
     }
 
     if (n == 3 && octet < 256) {
@@ -142,11 +146,17 @@ static bool iplist_parse_addr(char *p, int sz, in_addr_t *s, in_addr_t *e) {
         *pa = addr;
     }
 
-    if (*e != INADDR_NONE && *e < *s) {
-        return false;
+    if (*s == INADDR_NONE || (*e != INADDR_NONE && *e < *s)) {
+        goto failed;
     }
 
     return true;
+
+failed:
+
+    ttservlog(g_serv, TTLOGERROR, "ttskeliplist invalid ip \"%.*s\"",
+              sz, ip);
+    return false;
 }
 
 
@@ -378,7 +388,7 @@ static void iplist_del(void *opq) {
     int        i;
     iplist_t  *ipl = (iplist_t *) opq;
 
-    ttservlog(g_serv, TTLOGINFO, "destroy ttskeliplist");
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist destroy");
 
     for (i = 0; i < IPLIST_INDEX_COUNT; i++) {
         if (ipl->count[i] > 0) {
@@ -399,6 +409,7 @@ static bool iplist_open(void *opq, const char *name) {
 
 
 static bool iplist_close(void *opq) {
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist close");
     return true;
 }
 
@@ -407,7 +418,7 @@ static void *iplist_get(void *opq, const void *kbuf, int ksiz, int *sp) {
     uintptr_t   *bm, m, n, v;
     in_addr_t    addr, dummy;
     iplist_t    *ipl;
-    int          idx;
+    int          idx, err;
 
     assert(opq && kbuf && ksiz >= 0 && sp);
 
@@ -420,7 +431,9 @@ static void *iplist_get(void *opq, const void *kbuf, int ksiz, int *sp) {
     m = IPLIST_INDEX_PTR(IPLIST_LOW_HALF(addr));
     n = IPLIST_INDEX_BIT(IPLIST_LOW_HALF(addr));
 
-    if (pthread_rwlock_rdlock(&ipl->lock[idx]) != 0) {
+    if ((err = pthread_rwlock_rdlock(&ipl->lock[idx])) != 0) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist rdlock failed: (%d) %s",
+                  err, strerror(err));
         return NULL;
     }
 
@@ -447,10 +460,13 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 {
     uintptr_t   s, e;
     in_addr_t   start, end;
-    int         i, idx;
+    int         i, idx, err;
     iplist_t   *ipl;
 
     assert(opq && kbuf && ksiz >= 0 && vbuf && vsiz >= 0);
+
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist put \"%.*s\"",
+              ksiz, (char *) kbuf);
 
     /* limit value only can be "1" */
     if (vsiz != 1 || *(char *) vbuf != '1') {
@@ -467,7 +483,9 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
         idx = IPLIST_HIGH_HALF(start);
         s = IPLIST_LOW_HALF(start);
 
-        if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+        if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -482,7 +500,9 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
         s = IPLIST_LOW_HALF(start);
         e = IPLIST_LOW_HALF(end);
 
-        if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+        if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -496,7 +516,9 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
     s = IPLIST_LOW_HALF(start);
     e = 65535;
 
-    if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+    if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                  err, strerror(err));
         return false;
     }
 
@@ -506,6 +528,8 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 
     for (i = IPLIST_HIGH_HALF(start) + 1; i < IPLIST_HIGH_HALF(end); i++) {
         if (pthread_rwlock_wrlock(&ipl->lock[i]) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -517,6 +541,8 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
     e = IPLIST_LOW_HALF(end);
 
     if (pthread_rwlock_wrlock(&ipl->lock[i]) != 0) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                  err, strerror(err));
         return false;
     }
 
@@ -530,7 +556,7 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
     uintptr_t   s, e;
     in_addr_t   start, end;
-    int         idx, i;
+    int         idx, i, err;
     iplist_t   *ipl;
 
     assert(opq && kbuf && ksiz >= 0);
@@ -545,7 +571,9 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
         idx = IPLIST_HIGH_HALF(start);
         s = IPLIST_LOW_HALF(start);
 
-        if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+        if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -560,7 +588,9 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
         s = IPLIST_LOW_HALF(start);
         e = IPLIST_LOW_HALF(end);
 
-        if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+        if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -574,7 +604,9 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
     s = IPLIST_LOW_HALF(start);
     e = 65535;
 
-    if (pthread_rwlock_wrlock(&ipl->lock[idx]) != 0) {
+    if ((err = pthread_rwlock_wrlock(&ipl->lock[idx])) != 0) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                  err, strerror(err));
         return false;
     }
 
@@ -584,6 +616,8 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
 
     for (i = IPLIST_HIGH_HALF(start) + 1; i < IPLIST_HIGH_HALF(end); i++) {
         if (pthread_rwlock_wrlock(&ipl->lock[i]) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                      err, strerror(err));
             return false;
         }
 
@@ -595,6 +629,8 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
     e = IPLIST_LOW_HALF(end);
 
     if (pthread_rwlock_wrlock(&ipl->lock[i]) != 0) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist wrlock failed: (%d) %s",
+                  err, strerror(err));
         return false;
     }
 
@@ -607,7 +643,7 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
 
 static uint64_t iplist_rnum(void *opq) {
     iplist_t   *ipl;
-    int         i;
+    int         i, err;
     uint64_t    rnum = 0, cnt;
 
     assert(opq);
@@ -616,7 +652,9 @@ static uint64_t iplist_rnum(void *opq) {
 
     for (i = 0; i < IPLIST_INDEX_COUNT; i++) {
 
-        if (pthread_rwlock_rdlock(&ipl->lock[i]) != 0) {
+        if ((err = pthread_rwlock_rdlock(&ipl->lock[i])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist rdlock failed: (%d) %s",
+                      err, strerror(err));
             return (uint64_t) -1;
         }
 
@@ -632,7 +670,7 @@ static uint64_t iplist_rnum(void *opq) {
 
 
 static uint64_t iplist_size(void *opq) {
-    int         i;
+    int         i, err;
     iplist_t   *ipl;
     uint64_t    size, cnt;
 
@@ -644,7 +682,9 @@ static uint64_t iplist_size(void *opq) {
     ipl = (iplist_t *) opq;
 
     for (i = 0; i < IPLIST_INDEX_COUNT; i++) {
-        if (pthread_rwlock_rdlock(&ipl->lock[i]) != 0) {
+        if ((err = pthread_rwlock_rdlock(&ipl->lock[i])) != 0) {
+            ttservlog(g_serv, TTLOGERROR, "ttskeliplist rdlock failed: (%d) %s",
+                      err, strerror(err));
             return (uint64_t) -1;
         }
 
@@ -662,6 +702,7 @@ static uint64_t iplist_size(void *opq) {
 
 static bool iplist_vanish(void *opq) {
     int         i;
+    int         err;
     iplist_t   *ipl;
 
     assert(opq);
@@ -669,7 +710,10 @@ static bool iplist_vanish(void *opq) {
     ipl = (iplist_t *) opq;
 
     for (i = 0; i < IPLIST_INDEX_COUNT; i++) {
-        if (pthread_rwlock_rdlock(&ipl->lock[i]) != 0) {
+        if ((err = pthread_rwlock_rdlock(&ipl->lock[i])) != 0) {
+            ttservlog(g_serv, TTLOGERROR,
+                      "ttskeliplist rdlock failed: (%d) %s",
+                      err, strerror(err));
             return (uint64_t) -1;
         }
 
@@ -690,7 +734,7 @@ bool initialize(ADBSKEL *skel) {
     int        i;
     iplist_t  *ipl;
 
-    ttservlog(g_serv, TTLOGINFO, "initialize ttskeliplist");
+    ttservlog(g_serv, TTLOGINFO, "ttskeliplist initialize");
 
     ipl = tccalloc(1, sizeof(iplist_t));
     skel->opq = ipl;
