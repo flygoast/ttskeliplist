@@ -1,8 +1,8 @@
 CC = gcc
 CFLAGS  = -fPIC -Wall -Werror -pipe  -g -D_GNU_SOURCE -D_REENTRANT
-LDFLAGS = -Wl,-e,__ttskeliplist_main
+LDFLAGS = -Wl,--rpath=. -Wl,-e,__ttskeliplist_main
 BIN     = /usr/local/bin/
-LIB 	= -ltokyocabinet -lpthread
+LIB 	= -ltokyocabinet -lpthread -rdynamic
 INC     =
 OO	= ttskeliplist.o
 TARGETS = ttskeliplist.so
