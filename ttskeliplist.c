@@ -51,7 +51,7 @@
 #define IPLIST_ALIGN_DOWN(s)    ((s) & ~(8 * sizeof(uintptr_t) - 1))
 
 
-extern TTSERV  *g_serv;
+__attribute__((weak)) extern TTSERV  *g_serv;
 
 
 typedef struct {
