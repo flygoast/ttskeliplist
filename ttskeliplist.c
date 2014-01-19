@@ -426,6 +426,12 @@ static void *iplist_get(void *opq, const void *kbuf, int ksiz, int *sp) {
         return NULL;
     }
 
+    if (dummy != INADDR_NONE) {
+        ttservlog(g_serv, TTLOGERROR, "ttskeliplist invalid key: %.*s",
+                  ksiz, kbuf);
+        return NULL;
+    }
+
     ipl = (iplist_t *) opq;
     idx = IPLIST_HIGH_HALF(addr);
     m = IPLIST_INDEX_PTR(IPLIST_LOW_HALF(addr));
