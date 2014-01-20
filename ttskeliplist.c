@@ -611,7 +611,7 @@ static bool iplist_out(void *opq, const void *kbuf, int ksiz) {
         return false;
     }
 
-    iplist_put_range(ipl, idx, s, e);
+    iplist_out_range(ipl, idx, s, e);
 
     pthread_rwlock_unlock(&ipl->lock[idx]);
 
