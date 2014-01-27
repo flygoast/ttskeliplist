@@ -536,7 +536,7 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 
         iplist_put_range(ipl, i, 0, 65535);
 
-        pthread_rwlock_unlock(&ipl->lock[idx]);
+        pthread_rwlock_unlock(&ipl->lock[i]);
     }
 
     e = IPLIST_LOW_HALF(end);
@@ -549,7 +549,7 @@ static bool iplist_put(void *opq, const void *kbuf, int ksiz,
 
     iplist_put_range(ipl, i, 0, e);
 
-    pthread_rwlock_unlock(&ipl->lock[idx]);
+    pthread_rwlock_unlock(&ipl->lock[i]);
     return true;
 }
 
