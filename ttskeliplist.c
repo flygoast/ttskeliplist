@@ -118,7 +118,7 @@ static bool iplist_parse_addr(char *ip, int sz, in_addr_t *s, in_addr_t *e) {
                 goto failed;
             }
 
-            if (m > 31) {
+            if (m > 32) {
                 goto failed;
             }
 
